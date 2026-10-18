@@ -183,8 +183,9 @@ class RecorderService : Service() {
             // Place by raw screen coordinates, ignoring the status bar and display cutout.
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
             fitInsetsTypes = 0
-            // Touches only pass through another app's overlay if it's at most 80% opaque.
-            alpha = 0.8f
+            // Mostly see-through so the game stays visible underneath. (Touches only pass through
+            // another app's overlay if it's at most 80% opaque.)
+            alpha = 0.3f
         }
 
         val context = createDisplayContext(display)

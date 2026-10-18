@@ -94,6 +94,12 @@ class VideoCompositor(
     @Volatile private var cameraAspect = 9f / 16f
     @Volatile private var screenAspect = 9f / 16f
 
+    // Full-viewport quad; glViewport places it in the camera or screen region. GL reads these
+    // client-side arrays on every draw, so they must stay referenced for the compositor's lifetime:
+    // once garbage collected, their native memory is freed and draws use garbage vertices.
+    private val positions = floatBuffer(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
+    private val texCoords = floatBuffer(0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f)
+
     private val stMatrix = FloatArray(16)
     private val cropMatrix = FloatArray(16)
     private val texMatrix = FloatArray(16)
@@ -190,9 +196,6 @@ class VideoCompositor(
         GLES20.glUseProgram(program)
         uTexMatrix = GLES20.glGetUniformLocation(program, "uTexMatrix")
 
-        // Full-viewport quad; glViewport places it in the camera or screen region.
-        val positions = floatBuffer(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
-        val texCoords = floatBuffer(0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f)
         val aPosition = GLES20.glGetAttribLocation(program, "aPosition")
         val aTexCoord = GLES20.glGetAttribLocation(program, "aTexCoord")
         GLES20.glEnableVertexAttribArray(aPosition)

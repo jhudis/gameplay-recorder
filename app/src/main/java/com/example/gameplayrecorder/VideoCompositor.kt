@@ -20,10 +20,15 @@ import java.nio.ByteOrder
 import java.util.concurrent.FutureTask
 
 /**
- * Draws the camera (center-cropped, top third) and the screen (top cropped off, bottom two thirds)
- * into a portrait H.264 encoder using OpenGL ES.
+ * Draws the camera (center-cropped, top third) and the screen (bottom two thirds) into a portrait
+ * H.264 encoder using OpenGL ES. The screen's top is cropped off, or its bottom if [cropScreenBottom]
+ * (for when the camera preview sits at the bottom of the screen).
  */
-class VideoCompositor(private val muxer: Muxer, private val display: Display) {
+class VideoCompositor(
+    private val muxer: Muxer,
+    private val display: Display,
+    private val cropScreenBottom: Boolean,
+) {
 
     companion object {
         const val WIDTH = 1080
@@ -222,10 +227,11 @@ class VideoCompositor(private val muxer: Muxer, private val display: Display) {
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
-        // Bottom: the screen scaled to full width, keeping its bottom and cropping off its top.
-        // Texture t=0 is the bottom edge, so scaling t keeps the bottom portion.
+        // Bottom: the screen scaled to full width, keeping its bottom (or top) and cropping off the rest.
+        // Texture t=0 is the bottom edge, so scaling t keeps the bottom portion; shifting it keeps the top.
         val visibleHeight = (screenAspect * SCREEN_HEIGHT / WIDTH).coerceAtMost(1f)
         Matrix.setIdentityM(cropMatrix, 0)
+        if (cropScreenBottom) Matrix.translateM(cropMatrix, 0, 0f, 1f - visibleHeight, 0f)
         Matrix.scaleM(cropMatrix, 0, 1f, visibleHeight, 1f)
         screenTexture.getTransformMatrix(stMatrix)
         Matrix.multiplyMM(texMatrix, 0, stMatrix, 0, cropMatrix, 0)

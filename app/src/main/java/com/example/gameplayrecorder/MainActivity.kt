@@ -6,6 +6,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
+import android.view.WindowInsets
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -28,7 +29,12 @@ class MainActivity : AppCompatActivity() {
     private val projectionConsent =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode != RESULT_OK) return@registerForActivityResult
-            val bounds = windowManager.maximumWindowMetrics.bounds
+            val metrics = windowManager.maximumWindowMetrics
+            val bounds = metrics.bounds
+            // The status bar (and any camera cutout it surrounds), measured even if currently hidden.
+            val topInset = metrics.windowInsets
+                .getInsetsIgnoringVisibility(WindowInsets.Type.statusBars() or WindowInsets.Type.displayCutout())
+                .top
             val intent = Intent(this, RecorderService::class.java)
                 .putExtra(RecorderService.EXTRA_RESULT_CODE, result.resultCode)
                 .putExtra(RecorderService.EXTRA_DATA, result.data)
@@ -36,6 +42,7 @@ class MainActivity : AppCompatActivity() {
                 .putExtra(RecorderService.EXTRA_HEIGHT, bounds.height())
                 .putExtra(RecorderService.EXTRA_DPI, resources.displayMetrics.densityDpi)
                 .putExtra(RecorderService.EXTRA_PREVIEW_AT_BOTTOM, previewAtBottomSwitch.isChecked)
+                .putExtra(RecorderService.EXTRA_TOP_INSET, topInset)
             startForegroundService(intent)
             updateUi(recording = true)
         }

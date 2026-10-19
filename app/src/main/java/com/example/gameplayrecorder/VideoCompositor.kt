@@ -21,13 +21,15 @@ import java.util.concurrent.FutureTask
 
 /**
  * Draws the camera (center-cropped, top third) and the screen (bottom two thirds) into a portrait
- * H.264 encoder using OpenGL ES. The screen's top is cropped off, or its bottom if [cropScreenBottom]
- * (for when the camera preview sits at the bottom of the screen).
+ * H.264 encoder using OpenGL ES. The screen's top is cropped off, or if [cropScreenBottom] (for when
+ * the camera preview sits at the bottom of the screen) its bottom plus the top [topInset] pixels,
+ * which hold the status bar.
  */
 class VideoCompositor(
     private val muxer: Muxer,
     private val display: Display,
     private val cropScreenBottom: Boolean,
+    private val topInset: Int,
 ) {
 
     companion object {
@@ -93,6 +95,7 @@ class VideoCompositor(
     /** Camera width / height after the sensor's rotation to the device's natural orientation. */
     @Volatile private var cameraAspect = 9f / 16f
     @Volatile private var screenAspect = 9f / 16f
+    @Volatile private var screenHeight = HEIGHT
 
     // Full-viewport quad; glViewport places it in the camera or screen region. GL reads these
     // client-side arrays on every draw, so they must stay referenced for the compositor's lifetime:
@@ -131,6 +134,7 @@ class VideoCompositor(
     fun setScreenSize(width: Int, height: Int) {
         screenTexture.setDefaultBufferSize(width, height)
         screenAspect = width.toFloat() / height
+        screenHeight = height
     }
 
     /**
@@ -230,11 +234,13 @@ class VideoCompositor(
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
-        // Bottom: the screen scaled to full width, keeping its bottom (or top) and cropping off the rest.
-        // Texture t=0 is the bottom edge, so scaling t keeps the bottom portion; shifting it keeps the top.
-        val visibleHeight = (screenAspect * SCREEN_HEIGHT / WIDTH).coerceAtMost(1f)
+        // Bottom: the screen scaled to full width, keeping its bottom (or the part just below the status
+        // bar) and cropping off the rest. Texture t=0 is the bottom edge, so scaling t keeps the bottom
+        // portion; shifting it keeps a higher one.
+        val topCrop = if (cropScreenBottom) (topInset.toFloat() / screenHeight).coerceIn(0f, 1f) else 0f
+        val visibleHeight = (screenAspect * SCREEN_HEIGHT / WIDTH).coerceAtMost(1f - topCrop)
         Matrix.setIdentityM(cropMatrix, 0)
-        if (cropScreenBottom) Matrix.translateM(cropMatrix, 0, 0f, 1f - visibleHeight, 0f)
+        if (cropScreenBottom) Matrix.translateM(cropMatrix, 0, 0f, 1f - topCrop - visibleHeight, 0f)
         Matrix.scaleM(cropMatrix, 0, 1f, visibleHeight, 1f)
         screenTexture.getTransformMatrix(stMatrix)
         Matrix.multiplyMM(texMatrix, 0, stMatrix, 0, cropMatrix, 0)

@@ -47,6 +47,7 @@ class RecorderService : Service() {
         const val EXTRA_HEIGHT = "height"
         const val EXTRA_DPI = "dpi"
         const val EXTRA_PREVIEW_AT_BOTTOM = "previewAtBottom"
+        const val EXTRA_TOP_INSET = "topInset"
         private const val CHANNEL_ID = "recording"
 
         var isRecording = false
@@ -114,7 +115,9 @@ class RecorderService : Service() {
 
         val display = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
         val previewAtBottom = intent.getBooleanExtra(EXTRA_PREVIEW_AT_BOTTOM, false)
-        val compositor = VideoCompositor(muxer, display, cropScreenBottom = previewAtBottom)
+        // With the preview at the bottom, the recording starts just below the status bar.
+        val topInset = if (previewAtBottom) intent.getIntExtra(EXTRA_TOP_INSET, 0) else 0
+        val compositor = VideoCompositor(muxer, display, cropScreenBottom = previewAtBottom, topInset = topInset)
         this.compositor = compositor
 
         val width = intent.getIntExtra(EXTRA_WIDTH, VideoCompositor.WIDTH)
@@ -126,7 +129,7 @@ class RecorderService : Service() {
         )
 
         openFrontCamera(compositor)
-        showCameraPreview(compositor, display, width, height, previewAtBottom)
+        showCameraPreview(compositor, display, width, height, previewAtBottom, topInset)
         audio = AudioCapture(projection, muxer).apply { start() }
     }
 
@@ -150,8 +153,8 @@ class RecorderService : Service() {
 
     /**
      * Shows the camera in an overlay in the band just above the part of the screen that gets recorded,
-     * or just below it if [atBottom]. That band is cropped out of the video, so the overlay never
-     * appears in it.
+     * or just below it if [atBottom] (where the recorded part starts [topInset] pixels down). That band
+     * is cropped out of the video, so the overlay never appears in it.
      */
     private fun showCameraPreview(
         compositor: VideoCompositor,
@@ -159,6 +162,7 @@ class RecorderService : Service() {
         screenWidth: Int,
         screenHeight: Int,
         atBottom: Boolean,
+        topInset: Int,
     ) {
         if (!Settings.canDrawOverlays(this)) return
         val scale = screenWidth.toFloat() / VideoCompositor.WIDTH
@@ -176,7 +180,7 @@ class RecorderService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             y = if (atBottom) {
-                recordedScreenHeight.coerceAtMost(screenHeight - cameraHeight)
+                (topInset + recordedScreenHeight).coerceAtMost(screenHeight - cameraHeight)
             } else {
                 (screenHeight - recordedScreenHeight - cameraHeight).coerceAtLeast(0)
             }

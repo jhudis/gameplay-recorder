@@ -16,6 +16,8 @@ import androidx.core.net.toUri
 class MainActivity : AppCompatActivity() {
 
     private lateinit var button: Button
+    /** Sent to Settings for the overlay permission; continue asking for the rest on return. */
+    private var awaitingOverlayPermission = false
 
     private val projectionConsent =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -28,7 +30,7 @@ class MainActivity : AppCompatActivity() {
                 .putExtra(RecorderService.EXTRA_HEIGHT, bounds.height())
                 .putExtra(RecorderService.EXTRA_DPI, resources.displayMetrics.densityDpi)
             startForegroundService(intent)
-            updateUi(running = true)
+            updateUi(RecorderService.State.IDLE)
         }
 
     private val permissions =
@@ -43,7 +45,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        button = Button(this).apply { setOnClickListener { toggleRecording() } }
+        button = Button(this).apply { setOnClickListener { onButtonClick() } }
         setContentView(FrameLayout(this).apply {
             addView(button, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -51,24 +53,49 @@ class MainActivity : AppCompatActivity() {
                 Gravity.CENTER,
             ))
         })
+        // Get every permission up front so recordings can then be started from the notification.
+        if (savedInstanceState == null && RecorderService.state == RecorderService.State.STOPPED) {
+            requestCapture()
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        updateUi(RecorderService.isRunning)
+        if (awaitingOverlayPermission) {
+            awaitingOverlayPermission = false
+            if (Settings.canDrawOverlays(this)) requestCapture()
+        }
+        updateUi(RecorderService.state)
     }
 
-    private fun updateUi(running: Boolean) {
+    private fun updateUi(state: RecorderService.State) {
         // Recording starts from the camera overlay once it's positioned.
-        button.text = if (running) "Stop recording" else "Set up recording"
+        button.text = when (state) {
+            RecorderService.State.STOPPED -> "Allow screen capture"
+            RecorderService.State.IDLE -> "Set up recording"
+            RecorderService.State.SETUP, RecorderService.State.RECORDING -> "Stop recording"
+        }
     }
 
-    private fun toggleRecording() {
-        if (RecorderService.isRunning) {
-            startService(Intent(this, RecorderService::class.java).setAction(RecorderService.ACTION_STOP))
-            updateUi(running = false)
-        } else if (!Settings.canDrawOverlays(this)) {
+    private fun onButtonClick() {
+        when (RecorderService.state) {
+            RecorderService.State.STOPPED -> requestCapture()
+            RecorderService.State.IDLE -> {
+                startService(Intent(this, RecorderService::class.java).setAction(RecorderService.ACTION_SETUP))
+                updateUi(RecorderService.State.SETUP)
+            }
+            RecorderService.State.SETUP, RecorderService.State.RECORDING -> {
+                startService(Intent(this, RecorderService::class.java).setAction(RecorderService.ACTION_STOP))
+                updateUi(RecorderService.State.IDLE)
+            }
+        }
+    }
+
+    /** Asks for the overlay, camera, microphone, and notification permissions, then screen capture. */
+    private fun requestCapture() {
+        if (!Settings.canDrawOverlays(this)) {
             // Needed for the camera preview overlay; can only be granted from Settings.
+            awaitingOverlayPermission = true
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, "package:$packageName".toUri()))
         } else {
             permissions.launch(arrayOf(

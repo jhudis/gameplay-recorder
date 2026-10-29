@@ -20,17 +20,11 @@ import java.nio.ByteOrder
 import java.util.concurrent.FutureTask
 
 /**
- * Draws the camera (center-cropped, top third) and the screen (bottom two thirds) into a portrait
- * H.264 encoder using OpenGL ES. The screen's top is cropped off, or if [cropScreenBottom] (for when
- * the camera preview sits at the bottom of the screen) its bottom plus the top [topInset] pixels,
- * which hold the status bar.
+ * Draws the camera (center-cropped, top third) and a band of the screen (bottom two thirds) into a
+ * portrait H.264 encoder using OpenGL ES, and mirrors the camera into an on-screen preview. Until
+ * [startEncoding] is called, only the preview is drawn.
  */
-class VideoCompositor(
-    private val muxer: Muxer,
-    private val display: Display,
-    private val cropScreenBottom: Boolean,
-    private val topInset: Int,
-) {
+class VideoCompositor(private val display: Display) {
 
     companion object {
         const val WIDTH = 1080
@@ -63,20 +57,16 @@ class VideoCompositor(
     private val thread = HandlerThread("compositor").apply { start() }
     private val handler = Handler(thread.looper)
 
-    private val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).apply {
-        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, WIDTH, HEIGHT).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, 8_000_000)
-            setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-        }
-        configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-    }
-    private val encoderSurface = encoder.createInputSurface()
+    private var encoder: MediaCodec? = null
+    private var encoderSurface: Surface? = null
+    /** Distance in pixels from the top of the screen to the top of the recorded band. */
+    private var recordedTop = 0
 
     private var eglDisplay = EGL14.EGL_NO_DISPLAY
     private var eglContext = EGL14.EGL_NO_CONTEXT
     private var eglSurface = EGL14.EGL_NO_SURFACE
+    /** Keeps the context current when there's no encoder or preview surface to draw to. */
+    private var offscreenEglSurface = EGL14.EGL_NO_SURFACE
     private var eglConfig: EGLConfig? = null
     private var previewTexture: SurfaceTexture? = null
     private var previewEglSurface = EGL14.EGL_NO_SURFACE
@@ -105,7 +95,8 @@ class VideoCompositor(
 
     private val stMatrix = FloatArray(16)
     private val cropMatrix = FloatArray(16)
-    private val texMatrix = FloatArray(16)
+    private val screenMatrix = FloatArray(16)
+    private val cameraMatrix = FloatArray(16)
     private var nextFrameTime = 0L
 
     private val tick = object : Runnable {
@@ -118,8 +109,6 @@ class VideoCompositor(
 
     init {
         onGlThread(::setUpGl)
-        encoder.start()
-        Thread({ drainEncoder(encoder, muxer) }, "video-drain").start()
         handler.post {
             nextFrameTime = SystemClock.uptimeMillis()
             tick.run()
@@ -150,7 +139,31 @@ class VideoCompositor(
             // Don't let the preview's vsync throttle the encoder.
             EGL14.eglMakeCurrent(eglDisplay, previewEglSurface, previewEglSurface, eglContext)
             EGL14.eglSwapInterval(eglDisplay, 0)
-            EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
+        }
+    }
+
+    /**
+     * Starts encoding into [muxer], recording the band of the screen that starts [recordedTop] pixels
+     * from the top.
+     */
+    fun startEncoding(muxer: Muxer, recordedTop: Int) {
+        handler.post {
+            this.recordedTop = recordedTop
+            val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).apply {
+                val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, WIDTH, HEIGHT).apply {
+                    setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                    setInteger(MediaFormat.KEY_BIT_RATE, 8_000_000)
+                    setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
+                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                }
+                configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            }
+            val surface = encoder.createInputSurface()
+            eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0)
+            encoder.start()
+            Thread({ drainEncoder(encoder, muxer) }, "video-drain").start()
+            this.encoder = encoder
+            encoderSurface = surface
         }
     }
 
@@ -158,16 +171,17 @@ class VideoCompositor(
         handler.post {
             handler.removeCallbacks(tick)
             releasePreview()
-            encoder.signalEndOfInputStream()
+            encoder?.signalEndOfInputStream()
             cameraSurface.release()
             screenSurface.release()
             cameraTexture.release()
             screenTexture.release()
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-            EGL14.eglDestroySurface(eglDisplay, eglSurface)
+            if (eglSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, eglSurface)
+            EGL14.eglDestroySurface(eglDisplay, offscreenEglSurface)
             EGL14.eglDestroyContext(eglDisplay, eglContext)
             EGL14.eglTerminate(eglDisplay)
-            encoderSurface.release()
+            encoderSurface?.release()
             thread.quitSafely()
         }
     }
@@ -180,6 +194,7 @@ class VideoCompositor(
             EGL14.EGL_GREEN_SIZE, 8,
             EGL14.EGL_BLUE_SIZE, 8,
             EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT or EGL14.EGL_PBUFFER_BIT,
             EGLExt.EGL_RECORDABLE_ANDROID, 1,
             EGL14.EGL_NONE,
         )
@@ -190,8 +205,10 @@ class VideoCompositor(
             eglDisplay, configs[0], EGL14.EGL_NO_CONTEXT,
             intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE), 0,
         )
-        eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, configs[0], encoderSurface, intArrayOf(EGL14.EGL_NONE), 0)
-        EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
+        offscreenEglSurface = EGL14.eglCreatePbufferSurface(
+            eglDisplay, configs[0], intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE), 0,
+        )
+        EGL14.eglMakeCurrent(eglDisplay, offscreenEglSurface, offscreenEglSurface, eglContext)
 
         val program = GLES20.glCreateProgram()
         GLES20.glAttachShader(program, compileShader(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER))
@@ -231,22 +248,7 @@ class VideoCompositor(
     }
 
     private fun drawFrame() {
-        GLES20.glClearColor(0f, 0f, 0f, 1f)
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-
-        // Bottom: the screen scaled to full width, keeping its bottom (or the part just below the status
-        // bar) and cropping off the rest. Texture t=0 is the bottom edge, so scaling t keeps the bottom
-        // portion; shifting it keeps a higher one.
-        val topCrop = if (cropScreenBottom) (topInset.toFloat() / screenHeight).coerceIn(0f, 1f) else 0f
-        val visibleHeight = (screenAspect * SCREEN_HEIGHT / WIDTH).coerceAtMost(1f - topCrop)
-        Matrix.setIdentityM(cropMatrix, 0)
-        if (cropScreenBottom) Matrix.translateM(cropMatrix, 0, 0f, 1f - topCrop - visibleHeight, 0f)
-        Matrix.scaleM(cropMatrix, 0, 1f, visibleHeight, 1f)
-        screenTexture.getTransformMatrix(stMatrix)
-        Matrix.multiplyMM(texMatrix, 0, stMatrix, 0, cropMatrix, 0)
-        drawQuad(screenTextureId, texMatrix, 0, SCREEN_HEIGHT)
-
-        // Top: the camera, rotated to stay upright with the display and center-cropped to fill.
+        // The camera, rotated to stay upright with the display and center-cropped to fill its band.
         val rotation = display.rotation * 90
         val aspect = if (rotation % 180 != 0) 1f / cameraAspect else cameraAspect
         val regionAspect = WIDTH.toFloat() / CAMERA_HEIGHT
@@ -258,25 +260,45 @@ class VideoCompositor(
         Matrix.scaleM(cropMatrix, 0, scaleX, scaleY, 1f)
         Matrix.translateM(cropMatrix, 0, -0.5f, -0.5f, 0f)
         cameraTexture.getTransformMatrix(stMatrix)
-        Matrix.multiplyMM(texMatrix, 0, stMatrix, 0, cropMatrix, 0)
-        drawQuad(cameraTextureId, texMatrix, SCREEN_HEIGHT, CAMERA_HEIGHT)
+        Matrix.multiplyMM(cameraMatrix, 0, stMatrix, 0, cropMatrix, 0)
 
-        EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, System.nanoTime())
-        EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+        if (eglSurface != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
+            GLES20.glClearColor(0f, 0f, 0f, 1f)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+
+            // Bottom: the recorded band of the screen, scaled to full width. Texture t=0 is the screen's
+            // bottom edge, so the band's top is at t = 1 - topCrop.
+            val topCrop = (recordedTop.toFloat() / screenHeight).coerceIn(0f, 1f)
+            val visibleHeight = (screenAspect * SCREEN_HEIGHT / WIDTH).coerceAtMost(1f - topCrop)
+            Matrix.setIdentityM(cropMatrix, 0)
+            Matrix.translateM(cropMatrix, 0, 0f, 1f - topCrop - visibleHeight, 0f)
+            Matrix.scaleM(cropMatrix, 0, 1f, visibleHeight, 1f)
+            screenTexture.getTransformMatrix(stMatrix)
+            Matrix.multiplyMM(screenMatrix, 0, stMatrix, 0, cropMatrix, 0)
+            drawQuad(screenTextureId, screenMatrix, 0, SCREEN_HEIGHT)
+
+            // Top: the camera.
+            drawQuad(cameraTextureId, cameraMatrix, SCREEN_HEIGHT, CAMERA_HEIGHT)
+
+            EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, System.nanoTime())
+            EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+        }
 
         // Preview: the same camera crop, filling the overlay.
         if (previewEglSurface != EGL14.EGL_NO_SURFACE) {
             EGL14.eglMakeCurrent(eglDisplay, previewEglSurface, previewEglSurface, eglContext)
             EGL14.eglQuerySurface(eglDisplay, previewEglSurface, EGL14.EGL_WIDTH, previewSize, 0)
             EGL14.eglQuerySurface(eglDisplay, previewEglSurface, EGL14.EGL_HEIGHT, previewSize, 1)
-            drawQuad(cameraTextureId, texMatrix, 0, previewSize[1], previewSize[0])
+            drawQuad(cameraTextureId, cameraMatrix, 0, previewSize[1], previewSize[0])
             EGL14.eglSwapBuffers(eglDisplay, previewEglSurface)
-            EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
         }
     }
 
     private fun releasePreview() {
         if (previewEglSurface != EGL14.EGL_NO_SURFACE) {
+            // Never leave the context current on a destroyed surface.
+            EGL14.eglMakeCurrent(eglDisplay, offscreenEglSurface, offscreenEglSurface, eglContext)
             EGL14.eglDestroySurface(eglDisplay, previewEglSurface)
             previewEglSurface = EGL14.EGL_NO_SURFACE
         }

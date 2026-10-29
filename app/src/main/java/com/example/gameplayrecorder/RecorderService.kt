@@ -79,7 +79,7 @@ class RecorderService : Service() {
     private var previewParams: WindowManager.LayoutParams? = null
     private var lockButton: View? = null
     private var timer: Chronometer? = null
-    private var recordedArea: RecordedAreaView? = null
+    private var shade: ShadeView? = null
     /** Distance in pixels from the top of the screen to the top of the recorded band. */
     private var recordedTop = 0
     private var locked = false
@@ -169,9 +169,7 @@ class RecorderService : Service() {
         audio = AudioCapture(projection, muxer).apply { start() }
 
         // Hand touches back to the game and fade the preview so the game shows through it. (Touches
-        // only pass through another app's overlay if it's at most 80% opaque.)
-        recordedArea?.let { overlayWindowManager?.removeViewImmediate(it) }
-        recordedArea = null
+        // only pass through another app's overlays if they're at most 80% opaque combined.)
         lockButton?.visibility = View.GONE
         timer?.apply {
             base = SystemClock.elapsedRealtime()
@@ -196,8 +194,8 @@ class RecorderService : Service() {
         timer = null
         preview?.let { overlayWindowManager?.removeViewImmediate(it) }
         preview = null
-        recordedArea?.let { overlayWindowManager?.removeViewImmediate(it) }
-        recordedArea = null
+        shade?.let { overlayWindowManager?.removeViewImmediate(it) }
+        shade = null
         camera?.close()
         camera = null
         virtualDisplay?.release()
@@ -217,8 +215,8 @@ class RecorderService : Service() {
 
     /**
      * Shows the camera in a draggable overlay, with the band of the screen to be recorded directly
-     * above or below it (whichever side has more room) outlined. The camera itself is never inside
-     * the recorded band, so it never appears in the video.
+     * above or below it (whichever side has more room), and shades the rest of the screen. Neither
+     * overlay draws inside the recorded band, so they never appear in the video.
      */
     @SuppressLint("ClickableViewAccessibility") // Dragging has no click equivalent.
     private fun showSetupOverlays(compositor: VideoCompositor, display: Display, screenWidth: Int, screenHeight: Int) {
@@ -234,16 +232,17 @@ class RecorderService : Service() {
         val windowManager = context.getSystemService(WindowManager::class.java)
         overlayWindowManager = windowManager
 
-        val recordedArea = RecordedAreaView(context)
-        windowManager.addView(recordedArea, overlayParams(
+        val shade = ShadeView(context)
+        windowManager.addView(shade, overlayParams(
             screenWidth, screenHeight,
             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            // The most that still lets touches through to the game.
-            alpha = 0.8f
+            // The most that, combined with the recording-time preview's 30%, stays within the 80%
+            // that still lets touches through to the game.
+            alpha = 0.7f
         })
-        this.recordedArea = recordedArea
+        this.shade = shade
 
         val params = overlayParams(screenWidth, cameraHeight, 0, PixelFormat.OPAQUE).apply {
             // See-through enough to show the game underneath while positioning.
@@ -258,7 +257,7 @@ class RecorderService : Service() {
             val recordAbove = cameraTop > maxCameraTop / 2
             params.y = if (recordAbove) cameraTop.coerceAtLeast(maxCameraTop - slack) else cameraTop.coerceAtMost(slack)
             recordedTop = if (recordAbove) params.y - recordedHeight else params.y + cameraHeight
-            recordedArea.setBand(recordedTop, recordedHeight)
+            shade.setUnshaded(minOf(recordedTop, params.y), maxOf(recordedTop + recordedHeight, params.y + cameraHeight))
         }
         // Start with the camera above a band reaching the bottom of the screen.
         placeCamera(slack)
@@ -410,31 +409,22 @@ class RecorderService : Service() {
     }
 }
 
-/** Dims everything outside the band of the screen that will be recorded, and outlines the band. */
-private class RecordedAreaView(context: Context) : View(context) {
+/** Lightly shades the screen above and below the band covered by the recorded area and the camera. */
+private class ShadeView(context: Context) : View(context) {
 
-    private val dimPaint = Paint().apply { color = Color.argb(128, 0, 0, 0) }
-    private val borderPaint = Paint().apply {
-        color = Color.RED
-        style = Paint.Style.STROKE
-        strokeWidth = 3 * resources.displayMetrics.density
-    }
-    private var bandTop = 0
-    private var bandHeight = 0
+    private val paint = Paint().apply { color = Color.argb(128, 0, 0, 0) }
+    private var unshadedTop = 0
+    private var unshadedBottom = 0
 
-    fun setBand(top: Int, height: Int) {
-        bandTop = top
-        bandHeight = height
+    fun setUnshaded(top: Int, bottom: Int) {
+        unshadedTop = top
+        unshadedBottom = bottom
         invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
-        val top = bandTop.toFloat()
-        val bottom = (bandTop + bandHeight).toFloat()
         val right = width.toFloat()
-        canvas.drawRect(0f, 0f, right, top, dimPaint)
-        canvas.drawRect(0f, bottom, right, height.toFloat(), dimPaint)
-        val inset = borderPaint.strokeWidth / 2
-        canvas.drawRect(inset, top + inset, right - inset, bottom - inset, borderPaint)
+        canvas.drawRect(0f, 0f, right, unshadedTop.toFloat(), paint)
+        canvas.drawRect(0f, unshadedBottom.toFloat(), right, height.toFloat(), paint)
     }
 }

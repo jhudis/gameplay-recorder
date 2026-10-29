@@ -2,6 +2,7 @@ package com.example.gameplayrecorder
 
 import android.Manifest
 import android.content.Intent
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.provider.Settings
@@ -34,7 +35,9 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
             if (granted[Manifest.permission.CAMERA] == true && granted[Manifest.permission.RECORD_AUDIO] == true) {
                 val manager = getSystemService(MediaProjectionManager::class.java)
-                projectionConsent.launch(manager.createScreenCaptureIntent())
+                // Only offer the entire screen: the recorded band is positioned in full-screen coordinates.
+                val config = MediaProjectionConfig.createConfigForDefaultDisplay()
+                projectionConsent.launch(manager.createScreenCaptureIntent(config))
             }
         }
 

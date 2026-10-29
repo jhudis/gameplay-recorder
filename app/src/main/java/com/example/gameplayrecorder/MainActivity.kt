@@ -30,7 +30,6 @@ class MainActivity : AppCompatActivity() {
                 .putExtra(RecorderService.EXTRA_HEIGHT, bounds.height())
                 .putExtra(RecorderService.EXTRA_DPI, resources.displayMetrics.densityDpi)
             startForegroundService(intent)
-            updateUi(RecorderService.State.IDLE)
         }
 
     private val permissions =
@@ -59,13 +58,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Follow the service, whose state can also change from its notification while this is open.
+        RecorderService.onStateChanged = ::updateUi
+        updateUi(RecorderService.state)
+    }
+
     override fun onResume() {
         super.onResume()
         if (awaitingOverlayPermission) {
             awaitingOverlayPermission = false
             if (Settings.canDrawOverlays(this)) requestCapture()
         }
-        updateUi(RecorderService.state)
+    }
+
+    override fun onStop() {
+        RecorderService.onStateChanged = null
+        super.onStop()
     }
 
     private fun updateUi(state: RecorderService.State) {
@@ -80,14 +90,10 @@ class MainActivity : AppCompatActivity() {
     private fun onButtonClick() {
         when (RecorderService.state) {
             RecorderService.State.STOPPED -> requestCapture()
-            RecorderService.State.IDLE -> {
+            RecorderService.State.IDLE ->
                 startService(Intent(this, RecorderService::class.java).setAction(RecorderService.ACTION_SETUP))
-                updateUi(RecorderService.State.SETUP)
-            }
-            RecorderService.State.SETUP, RecorderService.State.RECORDING -> {
+            RecorderService.State.SETUP, RecorderService.State.RECORDING ->
                 startService(Intent(this, RecorderService::class.java).setAction(RecorderService.ACTION_STOP))
-                updateUi(RecorderService.State.IDLE)
-            }
         }
     }
 

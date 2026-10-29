@@ -72,8 +72,14 @@ class RecorderService : Service() {
         private const val CHANNEL_ID = "recording"
         private const val NOTIFICATION_ID = 1
 
+        /** Called on the main thread whenever [state] changes. */
+        var onStateChanged: ((State) -> Unit)? = null
+
         var state = State.STOPPED
-            private set
+            private set(value) {
+                field = value
+                onStateChanged?.invoke(value)
+            }
     }
 
     enum class State {

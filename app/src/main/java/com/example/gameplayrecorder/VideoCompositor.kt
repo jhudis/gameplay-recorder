@@ -236,12 +236,15 @@ class VideoCompositor(private val display: Display) {
         cameraTextureId = textures[0]
         screenTextureId = textures[1]
 
-        // Latch every new frame immediately so each draw uses the latest image from both sources.
+        // Latch every new frame immediately so each draw uses the latest image from both sources. A
+        // frame that arrived just before stop() still delivers its callback afterwards, when latching
+        // a released texture would throw and kill the app before the recording is finished.
+        val latchFrame = SurfaceTexture.OnFrameAvailableListener { if (!it.isReleased) it.updateTexImage() }
         cameraTexture = SurfaceTexture(cameraTextureId).apply {
-            setOnFrameAvailableListener({ it.updateTexImage() }, handler)
+            setOnFrameAvailableListener(latchFrame, handler)
         }
         screenTexture = SurfaceTexture(screenTextureId).apply {
-            setOnFrameAvailableListener({ it.updateTexImage() }, handler)
+            setOnFrameAvailableListener(latchFrame, handler)
         }
         cameraSurface = Surface(cameraTexture)
         screenSurface = Surface(screenTexture)

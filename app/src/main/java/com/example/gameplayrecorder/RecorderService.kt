@@ -15,6 +15,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.SurfaceTexture
+import android.graphics.Typeface
 import android.graphics.drawable.Icon
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -31,8 +32,10 @@ import android.os.Environment
 import android.os.Handler
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.Settings
+import android.util.TypedValue
 import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
@@ -40,6 +43,7 @@ import android.view.TextureView
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.Chronometer
 import android.widget.FrameLayout
 import kotlin.math.roundToInt
 
@@ -74,6 +78,7 @@ class RecorderService : Service() {
     private var preview: View? = null
     private var previewParams: WindowManager.LayoutParams? = null
     private var lockButton: View? = null
+    private var timer: Chronometer? = null
     private var recordedArea: RecordedAreaView? = null
     /** Distance in pixels from the top of the screen to the top of the recorded band. */
     private var recordedTop = 0
@@ -168,6 +173,11 @@ class RecorderService : Service() {
         recordedArea?.let { overlayWindowManager?.removeViewImmediate(it) }
         recordedArea = null
         lockButton?.visibility = View.GONE
+        timer?.apply {
+            base = SystemClock.elapsedRealtime()
+            visibility = View.VISIBLE
+            start()
+        }
         val params = previewParams
         if (preview != null && params != null) {
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
@@ -182,6 +192,8 @@ class RecorderService : Service() {
         if (!isRunning) return
         isRunning = false
         // Remove the preview before the compositor shuts down so it can release the preview surface.
+        timer?.stop()
+        timer = null
         preview?.let { overlayWindowManager?.removeViewImmediate(it) }
         preview = null
         recordedArea?.let { overlayWindowManager?.removeViewImmediate(it) }
@@ -271,6 +283,15 @@ class RecorderService : Service() {
             text = "Start recording"
             setOnClickListener { lock() }
         }
+        // Elapsed recording time, shown once recording starts.
+        val timer = Chronometer(context).apply {
+            visibility = View.GONE
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
+            setTypeface(typeface, Typeface.BOLD)
+            setShadowLayer(4f, 0f, 0f, Color.BLACK)
+        }
+        val timerMargin = (8 * resources.displayMetrics.density).roundToInt()
         val view = FrameLayout(context).apply {
             addView(textureView)
             addView(lockButton, FrameLayout.LayoutParams(
@@ -278,6 +299,11 @@ class RecorderService : Service() {
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER,
             ))
+            addView(timer, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.END,
+            ).apply { setMargins(timerMargin, timerMargin, timerMargin, timerMargin) })
         }
 
         var grabOffset = 0f
@@ -295,6 +321,7 @@ class RecorderService : Service() {
         windowManager.addView(view, params)
         preview = view
         this.lockButton = lockButton
+        this.timer = timer
     }
 
     /** Params for an overlay placed by raw screen coordinates, ignoring the status bar and display cutout. */
